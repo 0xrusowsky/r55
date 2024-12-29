@@ -235,6 +235,10 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[cfg(feature = "deploy")]
             pub mod deploy {
             use super::*;
+            use alloy_sol_types::SolValue;
+            use eth_riscv_runtime::*;
+
+            #emit_helper
             #deployment_code
         }
 
