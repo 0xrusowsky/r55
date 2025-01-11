@@ -11,7 +11,7 @@ pub use riscv_rt::entry;
 mod alloc;
 pub mod block;
 pub mod tx;
-pub mod types;
+pub mod storage;
 
 pub mod log;
 pub use log::{emit_log, Event};
@@ -56,21 +56,30 @@ pub fn return_riscv(addr: u64, offset: u64) -> ! {
     unreachable!()
 }
 
-pub fn sload(key: u64) -> U256 {
-    let first: u64;
-    let second: u64;
-    let third: u64;
-    let fourth: u64;
+pub fn sload(key: U256) -> U256 {
+    let key = key.as_limbs();
+    let (val0, val1, val2, val3): (u64, u64, u64, u64);
     unsafe {
-        asm!("ecall", lateout("a0") first, lateout("a1") second, lateout("a2") third, lateout("a3") fourth, in("a0") key, in("t0") u8::from(Syscall::SLoad));
+        asm!(
+            "ecall",
+            lateout("a0") val0, lateout("a1") val1, lateout("a2") val2, lateout("a3") val3,
+            in("a0") key[0], in("a1") key[1], in("a2") key[2], in("a3") key[3],
+            in("t0") u8::from(Syscall::SLoad));
     }
-    U256::from_limbs([first, second, third, fourth])
+    U256::from_limbs([val0, val1, val2, val3])
 }
 
-pub fn sstore(key: u64, value: U256) {
-    let limbs = value.as_limbs();
+pub fn sstore(key: U256, value: U256) {
+    let key = key.as_limbs();
+    let value = value.as_limbs();
+    
     unsafe {
-        asm!("ecall", in("a0") key, in("a1") limbs[0], in("a2") limbs[1], in("a3") limbs[2], in("a4") limbs[3], in("t0") u8::from(Syscall::SStore));
+        asm!(
+            "ecall",
+            in("a0") key[0], in("a1") key[1], in("a2") key[2], in("a3") key[3],
+            in("a4") value[0], in("a5") value[1], in("a6") value[2], in("a7") value[3],
+            in("t0") u8::from(Syscall::SStore)
+        );
     }
 }
 

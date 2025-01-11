@@ -270,12 +270,16 @@ fn execute_riscv(
                         });
                     }
                     Syscall::SLoad => {
-                        let key: u64 = emu.cpu.xregs.read(10);
+                        let key1: u64 = emu.cpu.xregs.read(10);
+                        let key2: u64 = emu.cpu.xregs.read(11);
+                        let key3: u64 = emu.cpu.xregs.read(12);
+                        let key4: u64 = emu.cpu.xregs.read(13);
+                        let key = U256::from_limbs([key1, key2, key3, key4]);
                         debug!(
                             "> SLOAD ({}) - Key: {}",
                             interpreter.contract.target_address, key
                         );
-                        match host.sload(interpreter.contract.target_address, U256::from(key)) {
+                        match host.sload(interpreter.contract.target_address, key) {
                             Some((value, is_cold)) => {
                                 debug!(
                                     "> SLOAD ({}) - Value: {}",
@@ -301,16 +305,21 @@ fn execute_riscv(
                         }
                     }
                     Syscall::SStore => {
-                        let key: u64 = emu.cpu.xregs.read(10);
-                        let first: u64 = emu.cpu.xregs.read(11);
-                        let second: u64 = emu.cpu.xregs.read(12);
-                        let third: u64 = emu.cpu.xregs.read(13);
-                        let fourth: u64 = emu.cpu.xregs.read(14);
-                        let result = host.sstore(
-                            interpreter.contract.target_address,
-                            U256::from(key),
-                            U256::from_limbs([first, second, third, fourth]),
-                        );
+                        let key1: u64 = emu.cpu.xregs.read(10);
+                        let key2: u64 = emu.cpu.xregs.read(11);
+                        let key3: u64 = emu.cpu.xregs.read(12);
+                        let key4: u64 = emu.cpu.xregs.read(13);
+                        let key = U256::from_limbs([key1, key2, key3, key4]);
+                        debug!("> SSTORE ({}) - Key: {}", interpreter.contract.target_address, key);
+
+                        let val1: u64 = emu.cpu.xregs.read(14);
+                        let val2: u64 = emu.cpu.xregs.read(15);
+                        let val3: u64 = emu.cpu.xregs.read(16);
+                        let val4: u64 = emu.cpu.xregs.read(17);
+                        let value = U256::from_limbs([val1, val2, val3, val4]);
+                        debug!("> SSTORE ({}) - Value: {}", interpreter.contract.target_address, value);
+
+                        let result = host.sstore(interpreter.contract.target_address, key, value);
                         if let Some(result) = result {
                             syscall_gas!(
                                 interpreter,
