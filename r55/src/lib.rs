@@ -367,9 +367,9 @@ mod tests {
         // EXPECTED STORAGE LAYOUT:
         //
         // pub struct ERC20 {
-        //     total_supply: Slot<U256>,                                    Slot: 0
-        //     balances: Mapping<Address, U256>,                            Slot: keccak256(1, address)
-        //     allowances: Mapping<Address, Mapping<Address, U256>>,        Slot: keccak256(2, address)
+        //     total_supply: Slot<U256>,                                Slot: 0
+        //     balances: Mapping<Address, U256>,                        Slot: keccak256(1, address)
+        //     allowances: Mapping<Address, Mapping<Address, U256>>,    Slot: keccak256(keccak256(2, address), address)
         // }
 
         // Assert `total_supply` is set to track the correct slot
