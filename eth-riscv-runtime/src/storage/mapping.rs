@@ -33,13 +33,13 @@ impl<K: SolValue, V: StorageStorable> StorageStorable for Mapping<K, V> {
 
 impl<K: SolValue, V: StorageStorable> Mapping<K, V> {
     pub fn encode_key(&self, key: K) -> U256 {
+        let id_bytes: [u8; 32] = self.id.to_be_bytes();
         let key_bytes = key.abi_encode();
-        let id_bytes: [u8; 32] = self.id.to_le_bytes();
 
         // Concatenate the key bytes and id bytes
         let mut concatenated = Vec::with_capacity(key_bytes.len() + id_bytes.len());
-        concatenated.extend_from_slice(&key_bytes);
         concatenated.extend_from_slice(&id_bytes);
+        concatenated.extend_from_slice(&key_bytes);
 
         // Call the keccak256 syscall with the concatenated bytes
         let offset = concatenated.as_ptr() as u64;
