@@ -116,10 +116,10 @@ mod tests {
     use crate::{compile_runtime, compile_with_prefix, test_utils::*};
 
     use alloy_core::hex::{self, ToHexExt};
+    use alloy_core::primitives::address;
     use alloy_sol_types::SolValue;
-    use alloy_core::primitives::{Keccak256, address};
     use tracing::{error, info};
-  
+
     const ERC20_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../erc20");
 
     #[test]
@@ -341,12 +341,13 @@ mod tests {
         // Setup addresses
         let alice: Address = address!("000000000000000000000000000000000000000A");
         let bob: Address = address!("000000000000000000000000000000000000000B");
+        let carol: Address = address!("000000000000000000000000000000000000000C");
 
         // Add balance to Alice's account for gas fees
         add_balance_to_db(&mut db, alice, 1e18 as u64);
 
         // Mint tokens to Alice
-        let mint_alice = U256::from(1e18);
+        let mint_alice = U256::from(10e18);
         let selector_mint = get_selector_from_sig("mint");
         let mut calldata_mint = (alice, mint_alice).abi_encode();
         let mut complete_mint_calldata = selector_mint.to_vec();
@@ -356,7 +357,7 @@ mod tests {
         assert!(mint_result.status, "Mint transaction failed");
 
         // Mint tokens to Bob
-        let mint_bob = U256::from(2e18);
+        let mint_bob = U256::from(20e18);
         let mut calldata_mint = (bob, mint_bob).abi_encode();
         let mut complete_mint_calldata = selector_mint.to_vec();
         complete_mint_calldata.append(&mut calldata_mint);
@@ -364,12 +365,21 @@ mod tests {
         let mint_result = run_tx(&mut db, &CONTRACT_ADDR, complete_mint_calldata).unwrap();
         assert!(mint_result.status, "Mint transaction failed");
 
+        // Approve Carol to spend 10 tokens from Alice
+        let allowance_carol = U256::from(5e18);
+        let selector_approve = get_selector_from_sig("approve");
+        let mut calldata_approve = (carol, allowance_carol).abi_encode();
+        let mut complete_calldata_approve = selector_approve.to_vec();
+        complete_calldata_approve.append(&mut calldata_approve);
+        let approve_result = run_tx(&mut db, &CONTRACT_ADDR, complete_calldata_approve).unwrap();
+        assert!(approve_result.status, "Approve transaction failed");
+
         // EXPECTED STORAGE LAYOUT:
         //
         // pub struct ERC20 {
         //     total_supply: Slot<U256>,                                Slot: 0
-        //     balances: Mapping<Address, U256>,                        Slot: keccak256(1, address)
-        //     allowances: Mapping<Address, Mapping<Address, U256>>,    Slot: keccak256(keccak256(2, address), address)
+        //     balances: Mapping<Address, U256>,                        Slot: keccak256(address, 1)
+        //     allowances: Mapping<Address, Mapping<Address, U256>>,    Slot: keccak256(address, keccak256(address, 2))
         // }
 
         // Assert `total_supply` is set to track the correct slot
@@ -378,40 +388,28 @@ mod tests {
             mint_alice + mint_bob,
             read_db_slot(&mut db, CONTRACT_ADDR, expected_slot)
         );
-        info!("Total supply check passed");
 
         let balances_id = U256::from(1);
         // Assert `balances[alice]` is set to track the correct slot
-        let id_bytes: [u8; 32] = balances_id.to_be_bytes();
-        let key_bytes = alice.abi_encode();
-        let mut concatenated = Vec::with_capacity(64);
-        concatenated.extend_from_slice(&id_bytes);
-        concatenated.extend_from_slice(&key_bytes);
-        info!("concatenated: {:?}", concatenated);
-        
-        let mut hasher = Keccak256::new();
-        hasher.update(concatenated);
-        let expected_slot: U256 = hasher.finalize().into();
-        info!("Alice balance slot: {}", expected_slot);
+        let expected_slot = get_mapping_slot(alice.abi_encode(), balances_id);
         assert_eq!(
             mint_alice,
             read_db_slot(&mut db, CONTRACT_ADDR, expected_slot)
         );
-        info!("Alice balance check passed");
 
         // Assert `balances[bob]` is set to track the correct slot
-        let id_bytes: [u8; 32] = balances_id.to_be_bytes();
-        let key_bytes = bob.abi_encode();
-        let mut concatenated = Vec::with_capacity(64);
-        concatenated.extend_from_slice(&id_bytes);
-        concatenated.extend_from_slice(&key_bytes);
-     
-        let mut hasher = Keccak256::new();
-        hasher.update(concatenated);
-        let expected_slot: U256 = hasher.finalize().into();
-        info!("Bob balance slot: {}", expected_slot);
+        let expected_slot = get_mapping_slot(bob.abi_encode(), balances_id);
         assert_eq!(
             mint_bob,
+            read_db_slot(&mut db, CONTRACT_ADDR, expected_slot)
+        );
+
+        let allowances_id = U256::from(2);
+        // Assert `allowance[alice][carol]` is set to track the correct slot
+        let id = get_mapping_slot(alice.abi_encode(), allowances_id);
+        let expected_slot = get_mapping_slot(carol.abi_encode(), id);
+        assert_eq!(
+            allowance_carol,
             read_db_slot(&mut db, CONTRACT_ADDR, expected_slot)
         );
     }

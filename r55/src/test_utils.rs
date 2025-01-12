@@ -40,6 +40,15 @@ pub fn get_selector_from_sig(sig: &str) -> [u8; 4] {
         .expect("Selector should have exactly 4 bytes")
 }
 
+pub fn get_mapping_slot(key_bytes: Vec<u8>, id: U256) -> U256 {
+    let mut data_bytes = Vec::with_capacity(64);
+    data_bytes.extend_from_slice(&key_bytes);
+    data_bytes.extend_from_slice(&id.to_be_bytes::<32>());
+
+    keccak256(data_bytes).into()
+}
+
 pub fn read_db_slot(db: &mut InMemoryDB, contract: Address, slot: U256) -> U256 {
-    db.storage(contract, slot).expect("Unable to read storge slot")
+    db.storage(contract, slot)
+        .expect("Unable to read storge slot")
 }

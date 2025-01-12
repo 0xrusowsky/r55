@@ -116,7 +116,7 @@ pub fn revert() -> ! {
     unreachable!()
 }
 
-pub fn keccak256(offset: u64, size: u64) -> B256 {
+pub fn keccak256(offset: u64, size: u64) -> U256 {
     let first: u64;
     let second: u64;
     let third: u64;
@@ -134,15 +134,7 @@ pub fn keccak256(offset: u64, size: u64) -> B256 {
             in("t0") u8::from(Syscall::Keccak256)
         );
     }
-
-    let mut bytes = [0u8; 32];
-
-    bytes[0..8].copy_from_slice(&first.to_be_bytes());
-    bytes[8..16].copy_from_slice(&second.to_be_bytes());
-    bytes[16..24].copy_from_slice(&third.to_be_bytes());
-    bytes[24..32].copy_from_slice(&fourth.to_be_bytes());
-
-    B256::from_slice(&bytes)
+U256::from_limbs([first, second, third, fourth])
 }
 
 pub fn msg_sender() -> Address {

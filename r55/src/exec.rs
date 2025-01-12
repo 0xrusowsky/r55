@@ -440,9 +440,11 @@ fn execute_riscv(
                         let ret_size: u64 = emu.cpu.xregs.read(11);
                         let data_bytes = dram_slice(emu, ret_offset, ret_size)?;
 
+                        debug!("TO BE HASHED: {:?}", data_bytes);
                         let mut hasher = Keccak256::new();
                         hasher.update(data_bytes);
                         let hash: U256 = hasher.finalize().into();
+                        debug!("KECCAK256: {:?}", hash);
 
                         let limbs = hash.as_limbs();
                         emu.cpu.xregs.write(10, limbs[0]);
