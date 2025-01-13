@@ -10,8 +10,8 @@ pub use riscv_rt::entry;
 
 mod alloc;
 pub mod block;
-pub mod tx;
 pub mod storage;
+pub mod tx;
 
 pub mod log;
 pub use log::{emit_log, Event};
@@ -72,7 +72,7 @@ pub fn sload(key: U256) -> U256 {
 pub fn sstore(key: U256, value: U256) {
     let key = key.as_limbs();
     let value = value.as_limbs();
-    
+
     unsafe {
         asm!(
             "ecall",
@@ -117,11 +117,7 @@ pub fn revert() -> ! {
 }
 
 pub fn keccak256(offset: u64, size: u64) -> U256 {
-    let first: u64;
-    let second: u64;
-    let third: u64;
-    let fourth: u64;
-
+    let (first, second, third, fourth): (u64, u64, u64, u64);
     unsafe {
         asm!(
             "ecall",
@@ -134,13 +130,11 @@ pub fn keccak256(offset: u64, size: u64) -> U256 {
             in("t0") u8::from(Syscall::Keccak256)
         );
     }
-U256::from_limbs([first, second, third, fourth])
+    U256::from_limbs([first, second, third, fourth])
 }
 
 pub fn msg_sender() -> Address {
-    let first: u64;
-    let second: u64;
-    let third: u64;
+    let (first, second, third): (u64, u64, u64);
     unsafe {
         asm!("ecall", lateout("a0") first, lateout("a1") second, lateout("a2") third, in("t0") u8::from(Syscall::Caller));
     }
@@ -152,10 +146,7 @@ pub fn msg_sender() -> Address {
 }
 
 pub fn msg_value() -> U256 {
-    let first: u64;
-    let second: u64;
-    let third: u64;
-    let fourth: u64;
+    let (first, second, third, fourth): (u64, u64, u64, u64);
     unsafe {
         asm!("ecall", lateout("a0") first, lateout("a1") second, lateout("a2") third, lateout("a3") fourth, in("t0") u8::from(Syscall::CallValue));
     }
