@@ -227,7 +227,7 @@ where
 
                     match <#ok_type>::abi_decode(&result, true) {
                         Ok(decoded) => Ok(decoded),
-                        Err(_) => Err(<#err_type>::abi_decode(&result[4..], true))
+                        Err(_) => Err(<#err_type>::abi_decode(&result.to_vec(), true))
                     }
                 }
             },

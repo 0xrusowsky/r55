@@ -106,16 +106,16 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
             Fields::Named(_) => panic!("Named fields are not supported"),
         };
 
-        let selector = quote!{ keccak256(#signature.as_bytes()[..4].to_vec()) };
+        let selector_bytes = quote!{ &keccak256(#signature.as_bytes().to_vec())[..4] };
 
         match &variant.fields {
-            Fields::Unit => quote! { selector if selector == #selector => #name::#variant_name },
+            Fields::Unit => quote! { selector if selector == #selector_bytes => #name::#variant_name },
             Fields::Unnamed(fields) => {
                 let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
                 let indices: Vec<_> = (0..fields.unnamed.len()).collect();
-                quote!{ s if s == #selector => {
+                quote!{ selector if selector == #selector_bytes => {
                     let mut values = Vec::new();
-                    #( values.push(<#field_types>::abi_decode(data, true).expect("Unable to decode")); )*
+                    #( values.push(<#field_types>::abi_decode(data.unwrap(), true).expect("Unable to decode")); )*
                     #name::#variant_name(#(values[#indices]),*)
                 }} 
             },
@@ -140,7 +140,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
 
                 if bytes.len() < 4 { eth_riscv_runtime::revert() };
                 let selector = &bytes[..4];
-                let data = &bytes[4..];
+                let data = if bytes.len() > 4 { Some(&bytes[4..]) } else { None };
 
                 match selector {
                     #(#decode_arms),*,
