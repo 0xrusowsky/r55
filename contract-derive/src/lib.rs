@@ -22,7 +22,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
         panic!("`Error` must be an enum");
     };
 
-    // Generate error encodding for each variant
+    // Generate error encoding for each variant
     let encode_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
         
@@ -81,7 +81,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
     });
 
 
-    // Generate error encodding for each variant
+    // Generate error encoding for each variant
     let decode_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
         
@@ -123,6 +123,30 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    // Generate `Debug` implementation for each variant
+    let debug_arms = variants.iter().map(|variant| {
+        let variant_name = &variant.ident;
+        
+        match &variant.fields {
+            Fields::Unit => quote! {
+                #name::#variant_name => { f.write_str(stringify!(#variant_name)) }
+            },
+            Fields::Unnamed(fields) => {
+                let vars: Vec<_> = (0..fields.unnamed.len())
+                    .map(|i| format_ident!("_{}", i))
+                    .collect();
+                quote! {
+                    #name::#variant_name(#(#vars),*) => {
+                        f.debug_tuple(stringify!(#variant_name))
+                            #(.field(#vars))*
+                            .finish()
+                    }
+                }
+            },
+            Fields::Named(_) => panic!("Named fields are not supported"),
+        }
+    });
+
     let expanded = quote! {
         #[show_streams]
         impl eth_riscv_runtime::error::Error for #name {
@@ -146,6 +170,12 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
                     #(#decode_arms),*,
                     _ => eth_riscv_runtime::revert()
                 }
+            }
+        }
+
+        impl core::fmt::Debug for #name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self { #(#debug_arms),* }
             }
         }
     };
@@ -283,6 +313,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         // Check if the method has a return type
+        let handle_panic = helpers::handle_panic();
         let return_handling = match &method.sig.output {
             ReturnType::Default => {
                 // No return value
@@ -291,16 +322,23 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
            ReturnType::Type(_,_) => {
                 match helpers::extract_wrapper_types(&method.sig.output) {
                     helpers::WrapperType::Result(_,_) => quote! {
-                        match self.#method_name(#( #arg_names ),*) {
-                            Ok(success) => {
-                                let result_bytes = success.abi_encode();
-                                let result_size = result_bytes.len() as u64;
-                                let result_ptr = result_bytes.as_ptr() as u64;
-                                eth_riscv_runtime::return_riscv(result_ptr, result_size);
-                            }
-                            Err(err) => {
-                                eth_riscv_runtime::revert_with_error(&err.abi_encode());
-                            }
+                        let result = core::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                            self.#method_name(#( #arg_names ),*)
+                        }));
+                    
+                        match result {
+                            Ok(method_result) => match method_result {
+                                Ok(success) => {
+                                    let result_bytes = success.abi_encode();
+                                    let result_size = result_bytes.len() as u64;
+                                    let result_ptr = result_bytes.as_ptr() as u64;
+                                    eth_riscv_runtime::return_riscv(result_ptr, result_size);
+                                }
+                                Err(err) => {
+                                    eth_riscv_runtime::revert_with_error(&err.abi_encode());
+                                }
+                            },
+                            Err(panic) => { #handle_panic }
                         }
                     },
                     helpers::WrapperType::Option(_) => quote! {

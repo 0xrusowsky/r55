@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(alloc_error_handler, maybe_uninit_write_slice, round_char_boundary)]
 
-use alloy_core::primitives::{Address, U256};
+use alloy_core::primitives::{Address, U256, Bytes};
 use core::{arch::asm, panic::PanicInfo, slice};
 pub use riscv_rt::entry;
 
@@ -27,20 +27,22 @@ pub unsafe fn slice_from_raw_parts(address: usize, length: usize) -> &'static [u
 }
 
 #[panic_handler]
-unsafe fn panic(_panic: &PanicInfo<'_>) -> ! {
+unsafe fn panic(info: &PanicInfo<'_>) -> ! {
     static mut IS_PANICKING: bool = false;
+    let msg = Bytes::from(info.message().as_str().unwrap_or_default()).to_vec();
+    revert_with_error(&msg);
 
-    if !IS_PANICKING {
-        IS_PANICKING = true;
-
-        revert();
-        // TODO with string
-        //print!("{panic}\n");
-    } else {
-        revert();
-        // TODO with string
-        //print_str("Panic handler has panicked! Things are very dire indeed...\n");
-    }
+    // if !IS_PANICKING {
+    //     IS_PANICKING = true;
+    //
+    //     revert();
+    //     // TODO with string
+    //     //print!("{panic}\n");
+    // } else {
+    //     revert();
+    //     // TODO with string
+    //     //print_str("Panic handler has panicked! Things are very dire indeed...\n");
+    // }
 }
 
 use eth_riscv_syscalls::Syscall;

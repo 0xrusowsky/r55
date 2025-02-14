@@ -599,6 +599,18 @@ fn to_camel_case(s: String) -> String {
     result
 }
 
+pub fn handle_panic() -> TokenStream{
+    quote! {
+        if let Some(message) = panic.downcast_ref::<&str>() {
+            eth_riscv_runtime::revert_with_error(message);
+        } else if let Some(message) = panic.downcast_ref::<String>() {
+            eth_riscv_runtime::revert_with_error(message);
+        } else {
+            eth_riscv_runtime::revert();
+        }
+    }
+}
+
 // Helper function to generate the deployment code
 pub fn generate_deployment_code(
     struct_name: &Ident,

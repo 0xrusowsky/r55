@@ -46,4 +46,16 @@ impl ERC20x {
             other => other
         }
     }
+
+    pub fn panics(&self) { panic!("This function always panics"); }
+
+    pub fn x_mint_panics(&mut self, to: Address, amount: U256, token_addr: Address) -> bool {
+        let mut token = IERC20::new(token_addr).with_ctx(self);     // IERC20<ReadWrite>
+        match token.mint(to, amount) {
+            Ok(res) => res,
+            Err(_) => panic!("ERC20::mint failed!")
+        }
+
+        // token.mint(to, amount).expect("ERC20::mint failed!")   >  this approach panics with a simple `revert()` rather than `revert_with_error(msg)`
+    }
 }
