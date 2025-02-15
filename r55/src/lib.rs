@@ -614,7 +614,6 @@ mod tests {
 
     #[test]
     fn test_string_error_handling_in_contract_calls() {
-        use tracing::info; 
         initialize_logger();
 
         let mut db = InMemoryDB::default();
@@ -637,7 +636,6 @@ mod tests {
         let selector_panic = get_selector_from_sig("panics");
         let selector_x_mint_panic = get_selector_from_sig("x_mint_panics");
 
-        info!("SIMPLE PANIC");
         // Attempt a call that panics with a string msg
         let panic_result = run_tx(&mut db, &erc20x, selector_panic.to_vec(), &alice).expect_err("Tx succeeded");
         if let Error::UnexpectedExecResult(ExecutionResult::Revert { gas_used, output }) = panic_result {
@@ -648,7 +646,6 @@ mod tests {
             );
         };
 
-        info!("CALL WITH PANIC");
         // Attempt a call that panics with a string msg
         let mut calldata_x_mint = (alice, U256::from(1e18), erc20).abi_encode();
         let mut complete_x_mint_calldata = selector_x_mint_panic.to_vec();
@@ -657,7 +654,7 @@ mod tests {
         if let Error::UnexpectedExecResult(ExecutionResult::Revert { gas_used, output }) = x_mint_panic_result {
             assert_eq!(
                 output,
-                Bytes::from("ERC20::mint failed!"),
+                Bytes::from("ERC20::mint() failed!: OnlyOwner"),
                 "Incorrect error"
             );
         };

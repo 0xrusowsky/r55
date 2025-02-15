@@ -81,7 +81,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
     });
 
 
-    // Generate error encoding for each variant
+    // Generate error decoding for each variant
     let decode_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
         
@@ -148,7 +148,6 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
     });
 
     let expanded = quote! {
-        #[show_streams]
         impl eth_riscv_runtime::error::Error for #name {
             fn abi_encode(&self) -> alloc::vec::Vec<u8> {
                 use alloy_core::primitives::keccak256;
@@ -162,13 +161,13 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
                 use alloy_sol_types::SolValue;
                 use alloc::vec::Vec;
 
-                if bytes.len() < 4 { eth_riscv_runtime::revert() };
+                if bytes.len() < 4 { panic!("Invalid error length") };
                 let selector = &bytes[..4];
                 let data = if bytes.len() > 4 { Some(&bytes[4..]) } else { None };
 
                 match selector {
                     #(#decode_arms),*,
-                    _ => eth_riscv_runtime::revert()
+                    _ => panic!("Unknown error")
                 }
             }
         }
@@ -307,13 +306,12 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Check if there are payable methods
         let checks = if !is_payable(&method) {
-            quote! { if eth_riscv_runtime::msg_value() > U256::from(0) { revert(); } }
+            quote! { if eth_riscv_runtime::msg_value() > U256::from(0) { panic!("Non-payable function"); } }
         } else {
             quote! {}
         };
 
         // Check if the method has a return type
-        let handle_panic = helpers::handle_panic();
         let return_handling = match &method.sig.output {
             ReturnType::Default => {
                 // No return value
@@ -322,23 +320,17 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
            ReturnType::Type(_,_) => {
                 match helpers::extract_wrapper_types(&method.sig.output) {
                     helpers::WrapperType::Result(_,_) => quote! {
-                        let result = core::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-                            self.#method_name(#( #arg_names ),*)
-                        }));
-                    
-                        match result {
-                            Ok(method_result) => match method_result {
-                                Ok(success) => {
-                                    let result_bytes = success.abi_encode();
-                                    let result_size = result_bytes.len() as u64;
-                                    let result_ptr = result_bytes.as_ptr() as u64;
-                                    eth_riscv_runtime::return_riscv(result_ptr, result_size);
-                                }
-                                Err(err) => {
-                                    eth_riscv_runtime::revert_with_error(&err.abi_encode());
-                                }
-                            },
-                            Err(panic) => { #handle_panic }
+                        let res = self.#method_name(#( #arg_names ),*);
+                        match res {
+                            Ok(success) => {
+                                let result_bytes = success.abi_encode();
+                                let result_size = result_bytes.len() as u64;
+                                let result_ptr = result_bytes.as_ptr() as u64;
+                                eth_riscv_runtime::return_riscv(result_ptr, result_size);
+                            }
+                            Err(err) => {
+                                eth_riscv_runtime::revert_with_error(&err.abi_encode());
+                            }
                         }
                     },
                     helpers::WrapperType::Option(_) => quote! {
@@ -349,7 +341,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                 let result_ptr = result_bytes.as_ptr() as u64;
                                 eth_riscv_runtime::return_riscv(result_ptr, result_size);
                             },
-                            None => eth_riscv_runtime::revert(),
+                            None => panic!("None"),
                         }
                     },
                     helpers::WrapperType::None => quote! {
@@ -365,7 +357,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         quote! {
             #method_selector => {
-                let (#( #arg_names ),*) = <(#( #arg_types ),*)>::abi_decode(calldata, true).unwrap();
+                let (#( #arg_names ),*) = <(#( #arg_types ),*)>::abi_decode(calldata, true).expect("abi decode failed");
                 #checks
                 #return_handling
             }
@@ -481,7 +473,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     match selector {
                         #( #match_arms )*
-                        _ => revert(),
+                        _ => panic!("unknown method"),
                     }
 
                     return_riscv(0, 0);
