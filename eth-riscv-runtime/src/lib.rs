@@ -29,6 +29,7 @@ pub unsafe fn slice_from_raw_parts(address: usize, length: usize) -> &'static [u
 
 #[panic_handler]
 unsafe fn panic(info: &PanicInfo<'_>) -> ! {
+    // Capture the panic info msg
     let mut message = ext_alloc::string::String::new();
     let _ = write!(message, "{:?}", info.message());    
 
