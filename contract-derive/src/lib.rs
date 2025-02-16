@@ -340,7 +340,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                 let result_ptr = result_bytes.as_ptr() as u64;
                                 eth_riscv_runtime::return_riscv(result_ptr, result_size);
                             },
-                            None => panic!("None"),
+                            None => eth_riscv_runtime::revert(),
                         }
                     },
                     helpers::WrapperType::None => quote! {
