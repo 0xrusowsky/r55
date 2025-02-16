@@ -4,8 +4,8 @@ use alloy_sol_types::SolValue;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, Data, DeriveInput, Fields, ImplItem, ImplItemMethod,
-    ItemImpl, ItemTrait, ReturnType, TraitItem,
+    parse_macro_input, Data, DeriveInput, Fields, ImplItem, ImplItemMethod, ItemImpl, ItemTrait,
+    ReturnType, TraitItem,
 };
 
 mod helpers;
@@ -25,25 +25,25 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
     // Generate error encoding for each variant
     let encode_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
-        
+
         let signature = match &variant.fields {
             Fields::Unit => {
                 format!("{}::{}", name, variant_name)
-            },
+            }
             Fields::Unnamed(fields) => {
-                let type_names: Vec<_> = fields.unnamed.iter()
-                    .map(|f| helpers::rust_type_to_sol_type(&f.ty)
-                        .expect("Unknown type")
-                        .sol_type_name()
-                        .into_owned()
-                    ).collect();
-                
-                format!("{}::{}({})",
-                    name,
-                    variant_name,
-                    type_names.join(",")
-                )
-            },
+                let type_names: Vec<_> = fields
+                    .unnamed
+                    .iter()
+                    .map(|f| {
+                        helpers::rust_type_to_sol_type(&f.ty)
+                            .expect("Unknown type")
+                            .sol_type_name()
+                            .into_owned()
+                    })
+                    .collect();
+
+                format!("{}::{}({})", name, variant_name, type_names.join(","))
+            }
             Fields::Named(_) => panic!("Named fields are not supported"),
         };
 
@@ -54,7 +54,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
                     .map(|i| format_ident!("_{}", i))
                     .collect();
                 quote! { #name::#variant_name(#(#vars),*) }
-            },
+            }
             Fields::Named(_) => panic!("Named fields are not supported"),
         };
 
@@ -62,10 +62,9 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
         let data = match &variant.fields {
             Fields::Unit => quote! {},
             Fields::Unnamed(fields) => {
-                let vars = (0..fields.unnamed.len())
-                    .map(|i| format_ident!("_{}", i));
+                let vars = (0..fields.unnamed.len()).map(|i| format_ident!("_{}", i));
                 quote! { #( res.extend_from_slice(&#vars.abi_encode()); )* }
-            },
+            }
             Fields::Named(_) => panic!("Named fields are not supported"),
         };
 
@@ -79,7 +78,6 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
             }
         }
     });
-
 
     // Generate error decoding for each variant
     let decode_arms = variants.iter().map(|variant| {
@@ -126,7 +124,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
     // Generate `Debug` implementation for each variant
     let debug_arms = variants.iter().map(|variant| {
         let variant_name = &variant.ident;
-        
+
         match &variant.fields {
             Fields::Unit => quote! {
                 #name::#variant_name => { f.write_str(stringify!(#variant_name)) }
@@ -142,7 +140,7 @@ pub fn error_derive(input: TokenStream) -> TokenStream {
                             .finish()
                     }
                 }
-            },
+            }
             Fields::Named(_) => panic!("Named fields are not supported"),
         }
     });
@@ -416,11 +414,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate the interface
     let interface_name = format_ident!("I{}", struct_name);
-    let interface = helpers::generate_interface(
-        &public_methods,
-        &interface_name,
-        None,
-    );
+    let interface = helpers::generate_interface(&public_methods, &interface_name, None);
 
     // Generate initcode for deployments
     let deployment_code = helpers::generate_deployment_code(struct_name, constructor);
