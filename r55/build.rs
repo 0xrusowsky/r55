@@ -2,6 +2,12 @@ use std::process::Command;
 
 const GENERATED_CODE_PATH: &str = "src/generated";
 
+struct ContractBytecode {
+    name: String,
+    runtime_bytecode: Vec<u8>,
+    deploy_bytecode: Vec<u8>,
+}
+
 pub fn main() {
     println!("cargo:warning=Workspace root: {}", env!("CARGO_MANIFEST_DIR"));
     println!("cargo:warning=Current dir: {}", std::env::current_dir().unwrap().display());
@@ -14,44 +20,22 @@ pub fn main() {
     println!("cargo:warning=Looking for linker script at: {}", workspace_root.join("r5-rust-rt.x").display());
     println!("cargo:warning=Linker script exists: {}", workspace_root.join("r5-rust-rt.x").exists());
 
-    // Detect contracts (looking in examples directory like tests do)
+    // Use relative paths like the test does
     let contracts = vec![
-        ("erc20", workspace_root.join("examples/erc20")),
-        ("erc20x", workspace_root.join("examples/erc20x")),
-        // Add other contracts here
+        ("erc20", "examples/erc20"),
+        ("erc20x", "examples/erc20x"),
     ];
 
     let mut bytecodes = Vec::new();
     
     for (name, path) in contracts {
-        // Create a temporary .cargo/config.toml with absolute paths
-        let cargo_config = format!(
-            r#"[target.riscv64imac-unknown-none-elf]
-rustflags = [
-    "-C", "link-arg=-v",
-    "-C", "link-arg=-T{}",
-    "-C", "link-arg=-Tlink.x",
-    "-C", "llvm-args=--inline-threshold=275"
-]
-
-[build]
-target = "riscv64imac-unknown-none-elf"
-"#,
-            workspace_root.join("r5-rust-rt.x").display()
-        );
-
-        // Ensure .cargo directory exists
-        let cargo_dir = path.join(".cargo");
-        std::fs::create_dir_all(&cargo_dir).unwrap();
-        std::fs::write(cargo_dir.join("config.toml"), cargo_config).unwrap();
-
         // Compile runtime first
         println!("Compiling runtime for {}", name);
-        let runtime_bytecode = compile_runtime(path.to_str().unwrap());
+        let runtime_bytecode = compile_runtime(path.to_string().as_str());
 
         // Then compile deploy code
         println!("Compiling deploy for {}", name);
-        let deploy_bytecode = compile_deploy(path.to_str().unwrap());
+        let deploy_bytecode = compile_deploy(path.to_string().as_str());
 
         bytecodes.push(ContractBytecode {
             name: name.to_string(),
@@ -69,6 +53,13 @@ target = "riscv64imac-unknown-none-elf"
 }
 
 fn compile_runtime(path: &str) -> Vec<u8> {
+    // Get absolute paths
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let contract_path = workspace_root.parent().unwrap().join(path);
+    
+    println!("cargo:warning=Compiling from: {}", workspace_root.display());
+    println!("cargo:warning=Contract path: {}", contract_path.display());
+
     let status = Command::new("cargo")
         .arg("+nightly-2025-01-07")
         .arg("build")
@@ -80,24 +71,21 @@ fn compile_runtime(path: &str) -> Vec<u8> {
         .arg("riscv64imac-unknown-none-elf")
         .arg("--bin")
         .arg("runtime")
-        .arg("-v")
-        .current_dir(path)
-        .env("CARGO_TARGET_DIR", format!("{}/target", path)) // Explicit target dir
+        .current_dir(workspace_root)
+        .env("CARGO_TARGET_DIR", contract_path.join("target"))
         .status()
         .expect("Failed to execute cargo command");
-    
+
     if !status.success() {
         panic!("Failed to compile runtime for {}", path);
     }
-    
-    // Read the compiled binary
-    let runtime_path = format!(
+
+    std::fs::read(format!(
         "{}/target/riscv64imac-unknown-none-elf/release/runtime",
-        path
-    );
-    
-    std::fs::read(runtime_path).expect("Failed to read runtime binary")
+        contract_path.display()
+    )).expect("Failed to read runtime binary")
 }
+
 
 fn compile_deploy(path: &str) -> Vec<u8> {
     let status = std::process::Command::new("cargo")
