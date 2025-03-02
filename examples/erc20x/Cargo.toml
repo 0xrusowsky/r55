@@ -13,7 +13,7 @@ interface-only = []
 [dependencies]
 contract-derive = { path = "../../contract-derive" }
 eth-riscv-runtime = { path = "../../eth-riscv-runtime" }
-erc20 = { path = "../erc20", features = ["interface-only"] }
+erc20 = { path = "../erc20", features = ["deploy"] }
 
 alloy-core = { version = "0.8.20", default-features = false }
 alloy-sol-types = { version = "0.8.20", default-features = false }

@@ -5,7 +5,7 @@ use eth_riscv_syscalls::Syscall;
 use revm::{
     handler::register::EvmHandler,
     interpreter::{
-        CallInputs, CallScheme, CallValue, Host, InstructionResult, Interpreter, InterpreterAction,
+        CreateInputs, CreateScheme, CallInputs, CallScheme, CallValue, Host, InstructionResult, Interpreter, InterpreterAction,
         InterpreterResult, SharedMemory,
     },
     primitives::{address, Address, Bytes, ExecutionResult, Log, Output, TransactTo, B256, U256},
@@ -378,6 +378,7 @@ fn execute_riscv(
                     }
                     Syscall::Call => return execute_call(emu, interpreter, host, false),
                     Syscall::StaticCall => return execute_call(emu, interpreter, host, true),
+                    Syscall::Create => return execute_create(emu, interpreter, host),
                     Syscall::Revert => {
                         let ret_offset: u64 = emu.cpu.xregs.read(10);
                         let ret_size: u64 = emu.cpu.xregs.read(11);
@@ -606,6 +607,42 @@ fn execute_call(
             is_static,
             is_eof: false,
             return_memory_offset: 0..0, // handled with RETURNDATACOPY
+        }),
+    })
+}
+
+fn execute_create(
+    emu: &mut Emulator,
+    interpreter: &mut Interpreter,
+    _host: &mut dyn Host,
+) -> Result<InterpreterAction> {
+    let value: u64 = emu.cpu.xregs.read(10);
+
+    // Get initcode
+    let args_offset: u64 = emu.cpu.xregs.read(11);
+    let args_size: u64 = emu.cpu.xregs.read(12);
+    let init_code: Bytes = emu
+        .cpu
+        .bus
+        .get_dram_slice(args_offset..(args_offset + args_size))
+        .unwrap_or(&mut [])
+        .to_vec()
+        .into();
+
+    // TODO: calc gas cost and call_gas_limit
+    let call_gas_limit = u64::MAX;
+
+    debug!("> Create context:");
+    debug!("  - Caller: {}", interpreter.contract.target_address);
+    debug!("  - Value: {}", value);
+    debug!("  - Initcode: {:?}", init_code);
+    Ok(InterpreterAction::Create {
+        inputs: Box::new(CreateInputs {
+            init_code,
+            gas_limit: call_gas_limit,
+            caller: interpreter.contract.target_address,
+            value: U256::from(value),
+            scheme: CreateScheme::Create
         }),
     })
 }

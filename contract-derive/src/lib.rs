@@ -282,6 +282,11 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
         if let ImplItem::Method(method) = item {
             if method.sig.ident == "new" {
                 constructor = Some(method);
+                // Constructor sanity checks 
+                let info = MethodInfo::from(method);
+                if !info.returns_self(&struct_name) {
+                    panic!("Constructor must return Self")
+                }
             } else if let syn::Visibility::Public(_) = method.vis {
                 public_methods.push(method);
             }
@@ -292,7 +297,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .map(|method| quote! { #method })
         .collect();
-    let match_arms: Vec<_> = public_methods.iter().map(|method| {
+    let mut match_arms: Vec<_> = public_methods.iter().map(|method| {
         let method_name = &method.sig.ident;
         let method_info = MethodInfo::from(*method);
         let method_selector = u32::from_be_bytes(
@@ -364,7 +369,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     }).collect();
-
+    
     let emit_helper = quote! {
         #[macro_export]
         macro_rules! get_type_signature {
@@ -424,8 +429,20 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
         None,
     );
 
-    // Generate initcode for deployments
+    // Generate initcode for deployments + prepare constructor args for Deployable impl
     let deployment_code = helpers::generate_deployment_code(struct_name, constructor);
+    let constructor_args = match constructor {
+        Some(method) => {
+            let method_info = MethodInfo::from(method);
+            let (_args_names, arg_types) = helpers::get_arg_props_all(&method_info); 
+            if arg_types.is_empty() {
+                quote! { () }
+            } else {
+                quote! { (#(#arg_types),*) }
+            }
+        },
+        None => quote! { () }
+    };
 
     // Generate the complete output with module structure
     let output = quote! {
@@ -441,6 +458,26 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #emit_helper
             #deployment_code
+
+            impl Deployable for #struct_name {
+                type ConstructorArgs = #constructor_args; 
+                type Interface = #interface_name;
+                
+                fn interface(addr: Address) -> Self::Interface {
+                    #interface_name::new(addr)
+                }
+
+                fn bytecode() -> &'static [u8] {
+                    // TODO: make more robust
+                    let contract_name = #struct_name.to_string().to_lowercase();
+                    
+                    // Look up the bytecode
+                    match get_contract_bytecode(contract_name) {
+                        Some((_, deploy)) => deploy,
+                        None => panic!("No bytecode found for contract: {}", contract_name),
+                    }
+                }
+            }
         }
 
         // Public interface module
@@ -473,6 +510,7 @@ pub fn contract(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                     match selector {
                         #( #match_arms )*
+                        // TODO: constructor
                         _ => panic!("unknown method"),
                     }
 

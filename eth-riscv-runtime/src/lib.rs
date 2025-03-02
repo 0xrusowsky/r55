@@ -18,6 +18,9 @@ pub use error::{revert, revert_with_error, Error};
 pub mod log;
 pub use log::{emit_log, Event};
 
+pub mod create;
+pub use create::{Deployable, create};
+
 pub mod call;
 pub use call::*;
 

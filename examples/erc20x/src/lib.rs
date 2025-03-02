@@ -8,13 +8,18 @@ use contract_derive::{contract, show_streams};
 
 extern crate alloc;
 
-use erc20::{ERC20Error, IERC20};
+use erc20::{ERC20, ERC20Error, IERC20};
 
-#[derive(Default, )]
+#[derive(Default)]
 pub struct ERC20x;
 
 #[contract]
 impl ERC20x {
+    pub fn deploy(&mut self, owner: Address) -> Address {
+        let token = ERC20::deploy(owner);                           // IERC20<ReadWrite>
+        token.address
+    }
+
     pub fn x_balance_of(&self, owner: Address, token_addr: Address) -> Option<U256> {
         let token = IERC20::new(token_addr).with_ctx(self);         // IERC20<ReadOnly>
         token.balance_of(owner)

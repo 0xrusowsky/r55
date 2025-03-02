@@ -45,6 +45,23 @@ impl<'a> MethodInfo<'a> {
             None => panic!("Expected `self` as the first arg"),
         }
     }
+
+    pub fn returns_self(&self, self_name: &Ident) -> bool {
+        match self.return_type {
+            ReturnType::Type(_, ty) => match &**ty {
+                Type::Path(path) => {
+                    if path.path.segments.len() != 0 {
+                        let segment = &path.path.segments[0];
+                        segment.ident == "Self" || segment.ident == self_name.to_string().as_str()
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            },
+            ReturnType::Default => false,
+        }
+    }
 }
 
 // Helper function to get the parameter names + types of a method
@@ -141,7 +158,7 @@ where
     quote! {
         use core::marker::PhantomData;
         pub struct #interface_name<C: CallCtx> {
-            address: Address,
+            pub address: Address,
             _ctx: PhantomData<C>
         }
 
@@ -390,6 +407,29 @@ pub fn generate_fn_selector(
     };
 
     let (_, arg_types) = get_arg_props_skip_first(method);
+    let args = arg_types
+        .iter()
+        .map(|ty| rust_type_to_sol_type(ty))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let args_str = args
+        .iter()
+        .map(|ty| ty.sol_type_name().into_owned())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let selector = format!("{}({})", name, args_str);
+    let selector_bytes = keccak256(selector.as_bytes())[..4].try_into().ok()?;
+    Some(selector_bytes)
+}
+
+// Helper function to generate fn selector for the constructor
+pub fn generate_constructor_selector(
+    method: &MethodInfo,
+    style: Option<InterfaceNamingStyle>,
+) -> Option<[u8; 4]> {
+    let name = method.name.to_string();
+    let (_, arg_types) = get_arg_props_all(method);
     let args = arg_types
         .iter()
         .map(|ty| rust_type_to_sol_type(ty))
