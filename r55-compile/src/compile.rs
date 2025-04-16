@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt, fs,
     io::Read,
     path::{Path, PathBuf},
@@ -8,216 +8,88 @@ use std::{
 use syn::{Attribute, Item, ItemImpl};
 use thiserror::Error;
 use toml::Value;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[derive(Debug, Error)]
-pub enum ContractError {
+pub enum CompileError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("Invalid TOML format")]
-    NotToml,
-    #[error("Missing required dependencies")]
-    MissingDependencies,
-    #[error("Missing required binaries")]
-    MissingBinaries,
-    #[error("Missing required features")]
-    MissingFeatures,
-    #[error("Invalid path")]
-    WrongPath,
+    #[error("Parsing error: {0}")]
+    SynError(#[from] syn::Error),
+    #[error("Invalid TOML format: {0}")]
+    TomlError(#[from] toml::de::Error),
+    #[error("Invalid path: {0}")]
+    PathError(String),
+    #[error("No contract found in file: {0}")]
+    NoContractFound(String),
     #[error("Cyclic dependency")]
     CyclicDependency,
+    #[error("Missing required deployable dependency: {0}")]
+    MissingDeployableDependency(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContractName {
-    pub package: String,
-    pub ident: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Contract {
-    pub path: PathBuf,
-    pub name: ContractName,
-}
-
+/// Represents a contract target within a project
 #[derive(Debug, Clone)]
-pub struct ContractWithDeps {
+pub struct ContractTarget {
+    /// The contract struct name
+    pub ident: String,
+    /// The module name where the contract is defined
+    pub module: String,
+    /// Path to the source file
+    pub source_file: PathBuf,
+    /// Generated package name
+    pub generated_package: String,
+}
+
+/// Represents a source project that may contain multiple smart-contracts
+#[derive(Debug, Clone)]
+pub struct ContractProject {
+    /// Directory path of the example
     pub path: PathBuf,
-    pub name: ContractName,
-    pub deps: Vec<Contract>,
+    /// Name of the project directory
+    pub name: String,
+    /// Contract targets within this project
+    pub targets: Vec<ContractTarget>,
+    /// Shared modules used by contracts
+    pub shared_modules: HashSet<String>,
+    /// Base dependencies from `Cargo.toml`
+    pub base_deps: HashMap<String, Value>,
+    /// Deployable contract dependencies
+    pub deployable_deps: HashMap<String, String>,
 }
 
-// Implement Display for Contract
-impl fmt::Display for Contract {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name.ident)
-    }
+/// Represents a generated (temporary) crate under `target/`
+#[derive(Debug, Clone)]
+pub struct GeneratedContract {
+    /// Path to the generated crate
+    pub path: PathBuf,
+    /// Package name of the generated crate
+    pub name: String,
+    /// Dependencies on other generated contracts
+    pub deps: Vec<String>,
+    /// Original source file path
+    pub original_source_path: PathBuf,
 }
 
-// Implement Display for ContractWithDeps
-impl fmt::Display for ContractWithDeps {
+impl fmt::Display for GeneratedContract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.deps.is_empty() {
-            write!(f, "{}", self.name.ident)
+            write!(f, "{}", self.name)
         } else {
-            write!(f, "{} with deps: [", self.name.ident)?;
+            write!(f, "{} with deps: [", self.name)?;
             for (i, dep) in self.deps.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                write!(f, "{}", dep.name.ident)?;
+                write!(f, "{}", dep)?;
             }
             write!(f, "]")
         }
     }
 }
 
-impl From<ContractWithDeps> for Contract {
-    fn from(value: ContractWithDeps) -> Contract {
-        Contract {
-            name: value.name,
-            path: value.path,
-        }
-    }
-}
-
-impl TryFrom<&PathBuf> for ContractWithDeps {
-    type Error = ContractError;
-
-    fn try_from(cargo_toml_path: &PathBuf) -> Result<Self, Self::Error> {
-        let parent_dir = cargo_toml_path.parent().ok_or(ContractError::NotToml)?;
-        let content = fs::read_to_string(cargo_toml_path)?;
-        let cargo_toml = content
-            .parse::<Value>()
-            .map_err(|_| ContractError::NotToml)?;
-
-        // Get package name
-        let name = cargo_toml
-            .get("package")
-            .and_then(|f| f.get("name"))
-            .ok_or(ContractError::NotToml)?
-            .as_str()
-            .ok_or(ContractError::NotToml)?
-            .to_string();
-
-        // Check for required features
-        let has_features = match &cargo_toml.get("features") {
-            Some(Value::Table(feat)) => {
-                feat.contains_key("default")
-                    && feat.contains_key("deploy")
-                    && feat.contains_key("interface-only")
-            }
-            _ => false,
-        };
-
-        if !has_features {
-            return Err(ContractError::MissingFeatures);
-        }
-
-        // Check for required binaries
-        let has_required_bins = match &cargo_toml.get("bin") {
-            Some(Value::Array(bins)) => {
-                let mut has_runtime = false;
-                let mut has_deploy = false;
-
-                for bin in bins {
-                    if let Value::Table(bin_table) = bin {
-                        if let Some(Value::String(name)) = bin_table.get("name") {
-                            if name == "runtime"
-                                && bin_table.get("path").and_then(|p| p.as_str())
-                                    == Some("src/lib.rs")
-                            {
-                                has_runtime = true;
-                            } else if name == "deploy"
-                                && bin_table.get("path").and_then(|p| p.as_str())
-                                    == Some("src/lib.rs")
-                                && bin_table
-                                    .get("required-features")
-                                    .map(|f| match f {
-                                        Value::String(s) => s == "deploy",
-                                        Value::Array(arr) => {
-                                            arr.contains(&Value::String("deploy".to_string()))
-                                        }
-                                        _ => false,
-                                    })
-                                    .unwrap_or(false)
-                            {
-                                has_deploy = true;
-                            }
-                        }
-                    }
-                }
-
-                has_runtime && has_deploy
-            }
-            _ => false,
-        };
-
-        if !has_required_bins {
-            return Err(ContractError::MissingBinaries);
-        }
-
-        // Get package dependencies
-        let mut contract_deps = Vec::new();
-        if let Some(Value::Table(deps)) = cargo_toml.get("dependencies") {
-            // Ensure required dependencies
-            if !(deps.contains_key("contract-derive") && deps.contains_key("eth-riscv-runtime")) {
-                return Err(ContractError::MissingDependencies);
-            }
-
-            for (name, dep) in deps {
-                if let Value::Table(dep_table) = dep {
-                    // Ensure "interface-only" feature
-                    let has_interface_only = match dep_table.get("features") {
-                        Some(Value::Array(features)) => {
-                            features.contains(&Value::String("interface-only".to_string()))
-                        }
-                        _ => false,
-                    };
-
-                    if !has_interface_only {
-                        continue;
-                    }
-
-                    // Ensure local path
-                    if let Some(Value::String(rel_path)) = dep_table.get("path") {
-                        let path = parent_dir
-                            .join(rel_path)
-                            .canonicalize()
-                            .map_err(|_| ContractError::WrongPath)?;
-                        contract_deps.push(Contract {
-                            name: ContractName {
-                                ident: String::new(),
-                                package: name.to_owned(),
-                            },
-                            path,
-                        });
-                    }
-                }
-            }
-        }
-
-        let contract = Self {
-            name: ContractName {
-                ident: String::new(),
-                package: name,
-            },
-            deps: contract_deps,
-            path: parent_dir.to_owned(),
-        };
-
-        Ok(contract)
-    }
-}
-
-impl Contract {
-    pub fn path_str(&self) -> eyre::Result<&str> {
-        self.path
-            .to_str()
-            .ok_or_else(|| eyre::eyre!("Failed to convert path to string {:?}", self.path))
-    }
-
-    pub fn compile_r55(&self) -> eyre::Result<Vec<u8>> {
+impl GeneratedContract {
+    pub fn compile(&self) -> eyre::Result<Vec<u8>> {
         // First compile runtime
         self.compile_runtime()?;
 
@@ -230,9 +102,13 @@ impl Contract {
     }
 
     fn compile_runtime(&self) -> eyre::Result<Vec<u8>> {
-        debug!("Compiling runtime: {}", self.name.package);
+        debug!("Compiling runtime: {}", self.name);
 
-        let path = self.path_str()?;
+        let path = self
+            .path
+            .to_str()
+            .ok_or_else(|| eyre::eyre!("Failed to convert path to string: {:?}", self.path))?;
+
         let status = Command::new("cargo")
             .arg("+nightly-2025-01-07")
             .arg("build")
@@ -255,31 +131,37 @@ impl Contract {
             info!("Cargo command completed successfully");
         }
 
-        let path = format!(
-            "{}/target/riscv64imac-unknown-none-elf/release/runtime",
-            path
-        );
-        let mut file = match fs::File::open(path) {
-            Ok(file) => file,
-            Err(e) => {
-                eyre::bail!("Failed to open file: {}", e);
-            }
-        };
+        let bin_path = PathBuf::from(path)
+            .join("target")
+            .join("riscv64imac-unknown-none-elf")
+            .join("release")
+            .join("runtime");
 
-        // Read the file contents into a vector.
+        let mut file = fs::File::open(&bin_path).map_err(|e| {
+            eyre::eyre!(
+                "Failed to open runtime binary {}: {}",
+                bin_path.display(),
+                e
+            )
+        })?;
+
+        // Read the file contents into a vector
         let mut bytecode = Vec::new();
-        if let Err(e) = file.read_to_end(&mut bytecode) {
-            eyre::bail!("Failed to read file: {}", e);
-        }
+        file.read_to_end(&mut bytecode)
+            .map_err(|e| eyre::eyre!("Failed to read runtime binary: {}", e))?;
 
         Ok(bytecode)
     }
 
     // Requires previous runtime compilation
     fn compile_deploy(&self) -> eyre::Result<Vec<u8>> {
-        debug!("Compiling deploy: {}", self.name.package);
+        debug!("Compiling deploy: {}", self.name);
 
-        let path = self.path_str()?;
+        let path = self
+            .path
+            .to_str()
+            .ok_or_else(|| eyre::eyre!("Failed to convert path to string: {:?}", self.path))?;
+
         let status = Command::new("cargo")
             .arg("+nightly-2025-01-07")
             .arg("build")
@@ -304,33 +186,30 @@ impl Contract {
             info!("Cargo command completed successfully");
         }
 
-        let path = format!(
-            "{}/target/riscv64imac-unknown-none-elf/release/deploy",
-            path
-        );
-        let mut file = match fs::File::open(path) {
-            Ok(file) => file,
-            Err(e) => {
-                eyre::bail!("Failed to open file: {}", e);
-            }
-        };
+        let bin_path = PathBuf::from(path)
+            .join("target")
+            .join("riscv64imac-unknown-none-elf")
+            .join("release")
+            .join("deploy");
 
-        // Read the file contents into a vector.
+        let mut file = fs::File::open(&bin_path).map_err(|e| {
+            eyre::eyre!("Failed to open deploy binary {}: {}", bin_path.display(), e)
+        })?;
+
+        // Read the file contents into a vector
         let mut bytecode = Vec::new();
-        if let Err(e) = file.read_to_end(&mut bytecode) {
-            eyre::bail!("Failed to read file: {}", e);
-        }
+        file.read_to_end(&mut bytecode)
+            .map_err(|e| eyre::eyre!("Failed to read deploy binary: {}", e))?;
 
         Ok(bytecode)
     }
 }
 
-pub fn find_r55_contracts(dir: &Path) -> HashMap<bool, Vec<ContractWithDeps>> {
-    let mut contracts: HashMap<bool, Vec<ContractWithDeps>> = HashMap::new();
+/// Finds all R55 smart-contract projects in a directory
+pub fn find_r55_contract_projects(dir: &Path) -> Result<Vec<ContractProject>, CompileError> {
+    let mut examples = Vec::new();
 
-    // Only scan direct subdirectories of given directory
-    let mut temp_contracts = Vec::new();
-    let mut temp_idents = HashMap::new();
+    // Scan subdirectories for potential examples
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
@@ -346,135 +225,237 @@ pub fn find_r55_contracts(dir: &Path) -> HashMap<bool, Vec<ContractWithDeps>> {
                 continue;
             }
 
-            // Try to parse as R55 contract
-            match ContractWithDeps::try_from(&cargo_path) {
-                Ok(contract) => {
-                    let lib_path = contract.path.join("src").join("lib.rs");
-                    let ident = match find_contract_ident(&lib_path) {
-                        Ok(ident) => ident,
-                        Err(e) => {
-                            error!(
-                                "Unable to find contract identifier at {:?}: {:?}",
-                                lib_path, e
-                            );
-                            continue;
-                        }
-                    };
-                    debug!(
-                        "Found R55 contract: ({} with ident: {}) at {:?}",
-                        contract.name.package, ident, contract.path
-                    );
-                    temp_idents.insert(contract.path.to_owned(), ident);
-                    temp_contracts.push(contract);
+            // Try to parse as R55 project unit
+            match parse_contract_project(&cargo_path) {
+                Ok(project) => {
+                    examples.push(project);
                 }
-                Err(ContractError::MissingDependencies) => continue,
-                Err(ContractError::MissingBinaries) => continue,
-                Err(ContractError::MissingFeatures) => continue,
-                Err(e) => warn!(
-                    "Error parsing potential contract at {:?}: {:?}",
-                    cargo_path, e
-                ),
-            }
-        }
-
-        // Set the identifiers for the contract and its dependencies
-        for mut contract in temp_contracts {
-            if let Some(ident) = temp_idents.get(&contract.path) {
-                contract.name.ident = ident.to_owned();
-            }
-
-            for dep in &mut contract.deps {
-                if let Some(ident) = temp_idents.get(&dep.path) {
-                    dep.name.ident = ident.to_owned();
+                Err(e) => {
+                    debug!("Skipping directory {:?}: {}", path, e);
                 }
             }
-
-            contracts
-                .entry(contract.deps.is_empty())
-                .or_default()
-                .push(contract)
         }
     }
 
-    contracts
+    Ok(examples)
 }
 
-pub fn sort_r55_contracts(
-    mut map: HashMap<bool, Vec<ContractWithDeps>>,
-) -> Result<Vec<Contract>, ContractError> {
-    // Add contracts without dependencies to the compilation queue
-    let mut queue: Vec<Contract> = match map.remove(&true) {
-        Some(contracts) => contracts.into_iter().map(|c| c.into()).collect(),
-        None => vec![],
-    };
-    debug!("{} Contracts without deps", queue.len());
+/// Parse a smart-contract project directory into a `ContractProject`
+fn parse_contract_project(cargo_toml_path: &Path) -> Result<ContractProject, CompileError> {
+    let example_dir = cargo_toml_path.parent().ok_or_else(|| {
+        CompileError::PathError(format!(
+            "Failed to get parent directory of {:?}",
+            cargo_toml_path
+        ))
+    })?;
 
-    // Contracts with dependencies can only be added when their dependencies are already in the queue
-    let mut pending = map.remove(&false).unwrap_or_default();
-    debug!("{} Contracts with deps", pending.len());
+    let example_name = example_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            CompileError::PathError(format!(
+                "Failed to get directory name from {:?}",
+                example_dir
+            ))
+        })?
+        .to_string();
 
-    while !pending.is_empty() {
-        let prev_pending = pending.len();
+    // Parse Cargo.toml
+    let cargo_content = fs::read_to_string(cargo_toml_path)?;
+    let cargo_toml: Value = toml::from_str(&cargo_content)?;
 
-        let mut next_pending = Vec::new();
-        for p in pending.into_iter() {
-            if all_handled(&p.deps, &queue) {
-                queue.push(p.to_owned().into());
+    // Extract base package name
+    let base_package_name = cargo_toml
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .ok_or_else(|| CompileError::PathError("Missing package.name in Cargo.toml".to_string()))?
+        .to_string();
+
+    // Extract base dependencies
+    let mut base_deps = HashMap::new();
+    let mut deployable_deps = HashMap::new();
+
+    if let Some(Value::Table(deps)) = cargo_toml.get("dependencies") {
+        for (name, details) in deps {
+            // Check if this is a marker dependency with `deployable` feature
+            if let Some(dep_table) = details.as_table() {
+                if let Some(Value::Array(features)) = dep_table.get("features") {
+                    if features.contains(&Value::String("deployable".to_string())) {
+                        deployable_deps.insert(name.clone(), name.clone());
+                    }
+                }
+            }
+
+            // Add to base dependencies (even if it's also a marker)
+            base_deps.insert(name.clone(), details.clone());
+        }
+    }
+
+    // Scan src directory for contract targets and shared modules
+    let src_dir = example_dir.join("src");
+    let lib_rs_path = src_dir.join("lib.rs");
+
+    if !lib_rs_path.exists() {
+        return Err(CompileError::PathError(format!(
+            "Missing src/lib.rs in {:?}",
+            example_dir
+        )));
+    }
+
+    // Parse lib.rs to find module declarations
+    let lib_content = fs::read_to_string(&lib_rs_path)?;
+    let lib_ast = syn::parse_file(&lib_content)?;
+
+    let mut module_names = HashSet::new();
+    for item in &lib_ast.items {
+        if let Item::Mod(item_mod) = item {
+            if item_mod.content.is_none() {
+                // External module
+                module_names.insert(item_mod.ident.to_string());
+            }
+        }
+    }
+
+    // Find contract targets in each module
+    let mut targets = Vec::new();
+    let mut shared_modules = HashSet::new();
+
+    for module_name in &module_names {
+        let module_path = src_dir.join(format!("{}.rs", module_name));
+
+        if !module_path.exists() {
+            // Try module/mod.rs structure
+            let alt_module_path = src_dir.join(module_name).join("mod.rs");
+            if !alt_module_path.exists() {
+                debug!(
+                    "Could not find module file for {} at {:?} or {:?}",
+                    module_name, module_path, alt_module_path
+                );
+                continue;
+            }
+        }
+
+        // Parse the module file
+        let module_content = fs::read_to_string(&module_path)?;
+        let module_ast = syn::parse_file(&module_content)?;
+
+        // Look for #[contract] annotation on impl blocks
+        let mut has_contract = false;
+        for item in &module_ast.items {
+            if let Item::Impl(item_impl) = item {
+                if has_contract_attribute(&item_impl.attrs) {
+                    // Found a contract
+                    if let Some(struct_name) = extract_struct_name(item_impl) {
+                        has_contract = true;
+
+                        // Generate package name based on project name and module name
+                        let generated_pkg_name = format!("{}-{}", example_name, module_name);
+
+                        targets.push(ContractTarget {
+                            ident: struct_name,
+                            module: module_name.clone(),
+                            source_file: module_path.clone(),
+                            generated_package: generated_pkg_name,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !has_contract {
+            // If no contract was found, this is a shared module
+            shared_modules.insert(module_name.clone());
+        }
+    }
+
+    if targets.is_empty() {
+        // No contracts found - try to find a contract in lib.rs itself
+        for item in &lib_ast.items {
+            if let Item::Impl(item_impl) = item {
+                if has_contract_attribute(&item_impl.attrs) {
+                    if let Some(struct_name) = extract_struct_name(item_impl) {
+                        // When contract is in lib.rs, use the project name as the generated name
+                        targets.push(ContractTarget {
+                            ident: struct_name,
+                            module: String::new(),
+                            source_file: lib_rs_path.clone(),
+                            generated_package: base_package_name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return Err(CompileError::NoContractFound(
+            example_dir.to_string_lossy().into(),
+        ));
+    }
+
+    Ok(ContractProject {
+        path: example_dir.to_path_buf(),
+        name: example_name,
+        targets,
+        shared_modules,
+        base_deps,
+        deployable_deps,
+    })
+}
+
+/// Sort generated contracts based on their dependencies
+pub fn sort_generated_contracts(
+    contracts: Vec<GeneratedContract>,
+) -> Result<Vec<GeneratedContract>, CompileError> {
+    // Create dependency mapping
+    let mut dependency_map: HashMap<String, Vec<String>> = HashMap::new();
+    for contract in &contracts {
+        dependency_map.insert(contract.name.clone(), contract.deps.clone());
+    }
+
+    // Keep track of sorted and remaining contracts
+    let mut sorted = Vec::new();
+    let mut remaining = contracts;
+
+    // Continue until all contracts are sorted
+    while !remaining.is_empty() {
+        let initial_len = remaining.len();
+        let mut next_remaining = Vec::new();
+
+        for contract in remaining {
+            let deps = dependency_map.get(&contract.name).unwrap();
+
+            // Check if all dependencies are already in sorted list
+            let all_deps_sorted = deps
+                .iter()
+                .all(|dep| sorted.iter().any(|c: &GeneratedContract| &c.name == dep));
+
+            if all_deps_sorted {
+                sorted.push(contract);
             } else {
-                next_pending.push(p);
+                next_remaining.push(contract);
             }
         }
-        pending = next_pending;
 
-        // If no contracts were processed, there is a cyclical dependency
-        if prev_pending == pending.len() {
-            return Err(ContractError::CyclicDependency);
+        remaining = next_remaining;
+
+        // If no progress was made, we have a cycle
+        if remaining.len() == initial_len && !remaining.is_empty() {
+            return Err(CompileError::CyclicDependency);
         }
     }
 
-    Ok(queue)
+    Ok(sorted)
 }
 
-fn all_handled(deps: &[Contract], handled: &[Contract]) -> bool {
-    for d in deps {
-        if !handled.contains(d) {
-            return false;
-        }
-    }
-
-    true
-}
-
-pub fn find_contract_ident(file_path: &Path) -> eyre::Result<String> {
-    // Read and parse the file content
-    let content = fs::read_to_string(file_path)?;
-    let file = syn::parse_file(&content)?;
-
-    // Look for impl blocks with #[contract] attribute
-    for item in file.items {
-        if let Item::Impl(item_impl) = item {
-            // Check if this impl block has the #[contract] attribute
-            if has_contract_attribute(&item_impl.attrs) {
-                // Extract the type name from the impl block
-                if let Some(ident) = extract_ident(&item_impl) {
-                    return Ok(ident);
-                }
-            }
-        }
-    }
-
-    eyre::bail!("No contract implementation found in file: {:?}", file_path)
-}
-
-// Check if attributes contain #[contract]
 fn has_contract_attribute(attrs: &[Attribute]) -> bool {
     attrs
         .iter()
         .any(|attr| attr.path.segments.len() == 1 && attr.path.segments[0].ident == "contract")
 }
 
-// Extract the type name from its impl block
-fn extract_ident(item_impl: &ItemImpl) -> Option<String> {
+fn extract_struct_name(item_impl: &ItemImpl) -> Option<String> {
     match &*item_impl.self_ty {
         syn::Type::Path(type_path) if !type_path.path.segments.is_empty() => {
             // Get the last segment of the path (the type name)
