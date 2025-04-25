@@ -8,7 +8,6 @@ edition = "2021"
 [features]
 default = []
 deploy = []
-deployable = []
 interface-only = []
 
 [dependencies]

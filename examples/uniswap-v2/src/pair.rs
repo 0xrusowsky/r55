@@ -7,15 +7,9 @@ use core::str::FromStr;
 
 use alloc::vec;
 use contract_derive::{contract, interface, payable, storage, Error, Event};
-use eth_riscv_runtime::{
-    block::{chain_id, timestamp},
-    types::*,
-    *,
-};
+use eth_riscv_runtime::{block::{chain_id, timestamp}, types::*, *};
 
-use alloy_core::primitives::{
-    address, bytes, keccak256 as alloy_keccak256, Address, Bytes, Keccak256, B256, U256, U8,
-};
+use alloy_core::primitives::{address, keccak256 as alloy_keccak, Address, Bytes, B256, U256, U8};
 use erc20::IERC20;
 
 use crate::{math::{mul_div, sqrt, MathError}, IUniswapV2Callee, IUniswapV2Factory};
@@ -95,8 +89,8 @@ pub enum UniswapV2PairError {
     K,
 }
 
-impl From<math::MathError> for UniswapV2PairError {
-    fn from(_: math::MathError) -> Self {
+impl From<MathError> for UniswapV2PairError {
+    fn from(_: MathError) -> Self {
         Self::MathError
     }
 }
@@ -150,17 +144,17 @@ impl UniswapV2Pair {
         // Set factory as deployer
         pair.factory.write(msg_sender());
 
-        // Calculate domain separator for EIP-712
-        // TODO: implement a user-frendly version of keccack256 -> it should use `Bytes` rather than a raw pointer
-        let domain_separator = alloy_core::primitives::keccak256(
-            (
-                alloy_keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                alloy_keccak256(Bytes::from_str("Uniswap V2").unwrap()),
-                alloy_keccak256(Bytes::from_str("1").unwrap()),
-                chain_id(),
-                pair.address(),
-            ).abi_encode()
-        );
+        // // Calculate domain separator for EIP-712
+        // // TODO: implement a user-frendly version of keccack256 -> it should use `Bytes` rather than a raw pointer
+        // let domain_separator = alloy_core::primitives::keccak256(
+        //     (
+        //         alloy_keccak("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+        //         alloy_keccak(Bytes::from_str("Uniswap V2").unwrap()),
+        //         alloy_keccak(Bytes::from_str("1").unwrap()),
+        //         chain_id(),
+        //         pair.address(),
+        //     ).abi_encode()
+        // );
 
         pair
     }
@@ -526,6 +520,18 @@ impl UniswapV2Pair {
     }
 
     // -- AMM PAIR - READ-ONLY FUNCTIONS -----------------------------------------------------
+    pub fn factory(&self) -> Address {
+        self.factory.read()
+    }
+
+    pub fn token0(&self) -> Address {
+        self.token0.read()
+    }
+
+    pub fn token1(&self) -> Address {
+        self.token1.read()
+    }
+
     pub fn get_reserves(&self) -> (U256, U256, U256) {
         (
             self.reserve0.read(),

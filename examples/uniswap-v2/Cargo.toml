@@ -11,13 +11,16 @@ deploy = []
 interface-only = []
 
 [dependencies]
-erc20 = { path = "../erc20", features = ["interface-only"] }
-
 contract-derive = { path = "../../contract-derive" }
 eth-riscv-runtime = { path = "../../eth-riscv-runtime" }
 
 alloy-core = { version = "0.8.20", default-features = false }
 alloy-sol-types = { version = "0.8.20", default-features = false }
+
+erc20 = { path = "../erc20", features = ["interface-only"] }
+
+[package.metadata.deployable_deps]
+pair = { path = "." }
 
 [[bin]]
 name = "runtime"

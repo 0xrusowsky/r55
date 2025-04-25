@@ -3,8 +3,10 @@
 
 pub mod math;
 pub mod pair;
+pub mod factory;
+pub mod deployable;
 
-use alloy_core::primitives::{bytes::Bytes, Address, U256};
+use alloy_core::primitives::{Bytes, Address, U256};
 
 #[interface]
 trait IUniswapV2Factory {

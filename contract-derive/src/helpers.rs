@@ -611,15 +611,23 @@ pub fn generate_deployment_code(
         Some(method) => {
             let method_info = MethodInfo::from(method);
             let (arg_names, arg_types) = get_arg_props_all(&method_info);
-            quote! {
-                impl #struct_name { #method }
 
-                // Get encoded constructor args
-                let calldata = eth_riscv_runtime::msg_data();
+            if arg_types.is_empty() {
+                quote! {
+                    impl #struct_name { #method }
+                    #struct_name::new();
+                }
+            } else {
+                quote! {
+                    impl #struct_name { #method }
 
-                let (#(#arg_names),*) = <(#(#arg_types),*)>::abi_decode(&calldata, true)
-                    .expect("Failed to decode constructor args");
-                #struct_name::new(#(#arg_names),*);
+                    // Get encoded constructor args
+                    let calldata = eth_riscv_runtime::msg_data();
+
+                    let (#(#arg_names),*) = <(#(#arg_types),*)>::abi_decode(&calldata, true)
+                        .expect("Failed to decode constructor args");
+                    #struct_name::new(#(#arg_names),*);
+                }
             }
         }
         None => quote! {

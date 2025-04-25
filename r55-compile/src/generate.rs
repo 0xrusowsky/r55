@@ -1,15 +1,124 @@
-use std::{
-    collections::HashMap,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{fmt::Write, fs, path::Path};
 use toml::Value;
 use tracing::{debug, info};
 
-use crate::compile::{CompileError, ContractProject, ContractTarget, GeneratedContract};
+use crate::{
+    ast,
+    helpers::{format_toml_table, get_contract_name, get_deployable_deps},
+    types::{CompileError, ContractProject, ContractTarget, GeneratedContract},
+};
 
-/// Generate temporary crates for all contract targets in the given projects
-pub fn generate_temporary_crates(
+/// Generate deployable implementation for the contract dependencies of an R55 contract.
+/// Can generate the files in both, the source (working dir), or the temp one (generated inside `target/`).
+pub fn generate_deployable(
+    contract: &GeneratedContract,
+    target_source: bool,
+) -> Result<(), CompileError> {
+    if contract.deps.is_empty() {
+        return Ok(());
+    }
+
+    debug!(
+        "GENERATING DEPLOYABLE FOR {} (target_source: {})",
+        contract.name, target_source
+    );
+
+    let mut content = String::new();
+
+    // Add header comments + common imports
+    content.push_str("//! Auto-generated based on Cargo.toml dependencies\n");
+    content.push_str(
+        "//! This file provides `Deployable` implementations for contract dependencies\n",
+    );
+    content.push_str("//! TODO (phase-2): rather than using `fn deploy(args: Args)`, figure out the constructor selector from the contract dependency\n\n");
+    content.push_str("use alloy_core::primitives::{Address, Bytes};\n");
+    content.push_str("use eth_riscv_runtime::{create::Deployable, InitInterface, ReadOnly};\n");
+    content.push_str("use core::include_bytes;\n\n");
+
+    // Add imports for each dependency
+    for (dep_name, same_project) in &contract.deps {
+        debug!(" > {} (same project: {})", dep_name, same_project);
+        // Keep original module name (lowercase package name)
+        let module_name = dep_name.to_lowercase().replace("-", "_");
+
+        // For interface name, use uppercase I + camel case name (IERC20)
+        let interface_name = format!("I{}", get_contract_name(dep_name));
+
+        content.push_str(
+            if target_source && *same_project {
+                let original_name = contract.get_original_name(&module_name);
+                format!("use crate::{}::{};\n", original_name, interface_name)
+            } else {
+                format!("use {}::{};\n", module_name, interface_name)
+            }
+            .as_str(),
+        );
+    }
+    content.push('\n');
+
+    // Add bytecode constants for each dependency
+    for (dep_name, same_project) in &contract.deps {
+        // Use uppercase for constant name
+        let const_name = dep_name.to_uppercase().replace('-', "_");
+
+        // Calculate the output bytecode path relative to the contract's directory
+        let bytecode_path = if !target_source && *same_project {
+            Path::new("../../../../../r55-output-bytecode").join(format!("{}.bin", dep_name))
+        } else {
+            Path::new("../../../../r55-output-bytecode").join(format!("{}.bin", dep_name))
+        };
+
+        content.push_str(&format!(
+            "const {}_BYTECODE: &'static [u8] = include_bytes!(\"{}\");\n",
+            const_name,
+            bytecode_path.display()
+        ));
+    }
+    content.push('\n');
+
+    // Add `Deployable` implementation for each dependency
+    for (dep_name, _same_project) in &contract.deps {
+        let struct_name = get_contract_name(dep_name);
+        let interface_name = format!("I{}", struct_name);
+
+        content.push_str(&format!("pub struct {};\n\n", struct_name));
+        content.push_str(&format!("impl Deployable for {} {{\n", struct_name));
+        content.push_str(&format!(
+            "    type Interface = {}<ReadOnly>;\n\n",
+            interface_name
+        ));
+        content.push_str("    fn __runtime() -> &'static [u8] {\n");
+        content.push_str(&format!(
+            "        {}_BYTECODE\n",
+            dep_name.to_uppercase().replace('-', "_")
+        ));
+        content.push_str("    }\n");
+        content.push_str("}\n\n");
+    }
+
+    // Write to file
+    let output_path = if !target_source {
+        debug!("TEMP DIR: {:?}", contract.path);
+        contract.path.join("src").join("deployable.rs")
+    } else {
+        debug!("WORKING DIR: {:?}", contract.original_source_path);
+        contract
+            .original_source_path
+            .join("src")
+            .join("deployable.rs")
+    };
+    fs::write(&output_path, content)?;
+
+    info!(
+        "Generated {:?} for contract: {}",
+        output_path, contract.name
+    );
+
+    Ok(())
+}
+
+/// Generate temporary crates for all input R55 contract targets
+pub fn generate_temp_crates(
     projects: &[ContractProject],
     temp_dir: &Path,
     project_root: &Path,
@@ -22,21 +131,15 @@ pub fn generate_temporary_crates(
         for target in &project.targets {
             let target_temp_dir = temp_dir.join(&project.name).join(&target.module);
 
-            // Create the temporary directory structure
             fs::create_dir_all(&target_temp_dir)?;
             fs::create_dir_all(target_temp_dir.join("src"))?;
 
-            // Populate the temp dir with the modified files from the working dir 
-            generate_cargo_toml(&project, target, &target_temp_dir, project_root)?;
-            copy_source_and_shared_modules(&project, target, &target_temp_dir)?;
-            create_cargo_config(&target_temp_dir, project_root)?;
-
-            // Add to generated contracts
-            let dependencies = build_dependency_list(&project, target);
-            generated_contracts.push(GeneratedContract {
+            // Create the `GeneratedContract` instance
+            let deployable_deps = get_deployable_deps(project, target);
+            let contract = GeneratedContract {
                 path: target_temp_dir,
                 name: target.generated_package.clone(),
-                deps: dependencies,
+                deps: deployable_deps,
                 original_source_path: target
                     .source_file
                     .parent()
@@ -44,22 +147,31 @@ pub fn generate_temporary_crates(
                     .parent()
                     .unwrap()
                     .to_path_buf(),
-            });
+            };
+
+            // Populate the temp dir with the modified files from the working dir
+            generate_cargo_toml(project, target, &contract)?;
+            decouple_contract_module(project, target, &contract.path)?;
+            generate_cargo_config(&contract.path, project_root)?;
+
+            generated_contracts.push(contract);
         }
     }
 
     Ok(generated_contracts)
 }
 
-/// Generate Cargo.toml for a temporary crate
+/// Generate a modified `Cargo.toml` for a R55 temporary crate
 fn generate_cargo_toml(
-    example: &ContractProject,
+    project: &ContractProject,
     target: &ContractTarget,
-    target_dir: &Path,
-    project_root: &Path,
+    contract: &GeneratedContract,
 ) -> Result<(), CompileError> {
-    // Start with a basic template
-    let mut cargo_toml = format!(
+    let mut cargo_toml = String::new();
+
+    // Basic R55 template
+    writeln!(
+        cargo_toml,
         r#"[package]
 name = "{}"
 version = "0.1.0"
@@ -70,98 +182,85 @@ edition = "2021"
 [features]
 default = []
 deploy = []
-deployable = []
 interface-only = []
 
 [dependencies]
 "#,
-        target.generated_package
-    );
+        contract.name
+    )?;
 
-    // Add all dependencies - both base and marker
-    let mut processed_deps = std::collections::HashSet::new();
+    // Process base dependencies
+    for (dep_name, dep_info) in &project.deps {
+        match dep_info {
+            Value::Table(dep_table) => {
+                let mut dep_table_adj = dep_table.clone();
+                let mut is_generated = false;
 
-    // First add base dependencies with adjusted paths
-    for (name, details) in &example.base_deps {
-        // Don't skip marker dependencies - we need them for external crates
-        processed_deps.insert(name.clone());
+                // Adjust path dependencies
+                if let Some(Value::String(rel_path)) = dep_table.get("path") {
+                    if rel_path == "." {
+                        if target.is_self_reference(dep_name) {
+                            continue;
+                        }
 
-        // Add the dependency
-        if let Some(dep_table) = details.as_table() {
-            let mut dep_entry = format!("{} = {{", name);
-            let mut first = true;
+                        if contract.name != project.name {
+                            is_generated = true;
+                        }
+                    }
 
-            // Handle path dependencies specially - adjust relative paths
-            if let Some(Value::String(rel_path)) = dep_table.get("path") {
-                let source_rel_path = Path::new(rel_path);
-                let source_abs_path = example.path.join(source_rel_path).canonicalize()?;
-
-                // Calculate relative path from target_dir to the dependency
-                let rel_path_from_target = pathdiff::diff_paths(&source_abs_path, target_dir)
-                    .ok_or_else(|| {
-                        CompileError::PathError(format!(
-                            "Failed to calculate relative path from {:?} to {:?}",
-                            target_dir, source_abs_path
-                        ))
-                    })?;
-
-                if !first {
-                    dep_entry.push_str(", ");
+                    dep_table_adj.insert(
+                        "path".into(),
+                        // For contract deps from the same project, use relative path to the generated dir
+                        if is_generated {
+                            Value::String(format!("../{}", dep_name))
+                        }
+                        // Otherwise, calculate relative path to the dependency location
+                        else {
+                            let source_rel_path = Path::new(rel_path);
+                            let source_abs_path =
+                                project.path.join(source_rel_path).canonicalize()?;
+                            let rel_path_from_target =
+                                pathdiff::diff_paths(&source_abs_path, &contract.path).ok_or_else(
+                                    || {
+                                        CompileError::PathError(format!(
+                                            "Failed to calculate relative path from {:?} to {:?}",
+                                            &contract.path, source_abs_path
+                                        ))
+                                    },
+                                )?;
+                            Value::String(rel_path_from_target.display().to_string())
+                        },
+                    );
                 }
-                first = false;
-                dep_entry.push_str(&format!("path = \"{}\"", rel_path_from_target.display()));
+
+                writeln!(
+                    cargo_toml,
+                    "{} = {}",
+                    if is_generated {
+                        format!("{}-{}", &project.name, dep_name)
+                    } else {
+                        dep_name.into()
+                    },
+                    format_toml_table(&dep_table_adj)?
+                )?;
             }
-
-            // For other dependencies, just copy the original entry
-            for (k, v) in dep_table {
-                if k == "path" {
-                    continue; // Handled above
-                }
-
-                let formatted_value = format_toml_value(v);
-                if !first {
-                    dep_entry.push_str(", ");
-                }
-                first = false;
-                dep_entry.push_str(&format!("{} = {}", k, formatted_value));
-            }
-
-            // Close the dependency entry
-            dep_entry.push_str("}");
-            cargo_toml.push_str(&format!("{}\n", dep_entry));
-        } else {
-            // Simple dependency format
-            cargo_toml.push_str(&format!("{} = {:?}\n", name, details));
+            _ => writeln!(cargo_toml, "{} = {}", dep_name, dep_info)?,
         }
     }
 
-    // Add dependencies on other generated contracts from the same example
-    for (other_target_name, _) in &example.deployable_deps {
-        // Skip if already processed or self-reference
-        if processed_deps.contains(other_target_name)
-            || other_target_name == &target.generated_package
-        {
-            continue;
+    // Process deployable dependencies
+    for (dep_name, same_project) in &project.deployable_deps {
+        if *same_project && dep_name != &contract.name {
+            if let Some((_, original_mod_name)) =
+                dep_name.split_once(&format!("{}-", &project.name))
+            {
+                _ = writeln!(
+                    cargo_toml,
+                    r#"{} = {{ path = "../{}", features = ["interface-only"] }}"#,
+                    dep_name, original_mod_name
+                );
+            }
         }
-
-        // Add this marker dependency
-        processed_deps.insert(other_target_name.clone());
-
-        // Extract module name from the target name (example-module format)
-        let parts: Vec<&str> = other_target_name.split('-').collect();
-        if parts.len() < 2 {
-            continue;
-        }
-
-        let other_module = parts[1..].join("-");
-
-        // Calculate relative path to the other target
-        let other_target_path = format!("../{}", other_module);
-
-        cargo_toml.push_str(&format!(
-            "{} = {{ path = \"{}\", features = [\"interface-only\"] }}\n",
-            other_target_name, other_target_path
-        ));
     }
 
     // Add bin targets
@@ -183,103 +282,13 @@ opt-level = "z"
     );
 
     // Write to file
-    fs::write(target_dir.join("Cargo.toml"), cargo_toml)?;
+    fs::write(contract.path.join("Cargo.toml"), cargo_toml)?;
 
     Ok(())
 }
 
-/// Format a TOML value as a string
-fn format_toml_value(value: &Value) -> String {
-    match value {
-        Value::String(s) => format!("\"{}\"", s),
-        Value::Integer(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Boolean(b) => b.to_string(),
-        Value::Datetime(dt) => format!("\"{}\"", dt),
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                return "[]".to_string();
-            }
-
-            let items: Vec<String> = arr.iter().map(format_toml_value).collect();
-            format!("[{}]", items.join(", "))
-        }
-        Value::Table(table) => {
-            if table.is_empty() {
-                return "{}".to_string();
-            }
-
-            let mut result = String::from("{ ");
-            let mut first = true;
-
-            for (k, v) in table {
-                if !first {
-                    result.push_str(", ");
-                }
-                first = false;
-                result.push_str(&format!("{} = {}", k, format_toml_value(v)));
-            }
-
-            result.push_str(" }");
-            result
-        }
-    }
-}
-
-/// Copy source files and shared modules to the temporary crate
-fn copy_source_and_shared_modules(
-    project: &ContractProject,
-    target: &ContractTarget,
-    target_dir: &Path,
-) -> Result<(), CompileError> {
-    let src_dir = target_dir.join("src");
-
-    // Read the contract source file
-    let source_content = fs::read_to_string(&target.source_file)?;
-
-    // Write as lib.rs in the temporary crate
-    fs::write(src_dir.join("lib.rs"), source_content)?;
-
-    // Copy shared modules
-    for module_name in &project.shared_modules {
-        let module_path = project.path.join("src").join(format!("{}.rs", module_name));
-
-        if module_path.exists() {
-            let module_content = fs::read_to_string(&module_path)?;
-            fs::write(src_dir.join(format!("{}.rs", module_name)), module_content)?;
-        } else {
-            // Try module/mod.rs structure
-            let mod_dir_path = project.path.join("src").join(module_name);
-            let mod_file_path = mod_dir_path.join("mod.rs");
-
-            if mod_file_path.exists() {
-                // Create the module directory
-                let target_mod_dir = src_dir.join(module_name);
-                fs::create_dir_all(&target_mod_dir)?;
-
-                // Copy mod.rs
-                let mod_content = fs::read_to_string(&mod_file_path)?;
-                fs::write(target_mod_dir.join("mod.rs"), mod_content)?;
-
-                // Copy all other files in the module directory
-                if let Ok(entries) = fs::read_dir(mod_dir_path) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let path = entry.path();
-                        if path.is_file() && path.file_name().unwrap() != "mod.rs" {
-                            let file_name = path.file_name().unwrap();
-                            fs::copy(&path, target_mod_dir.join(file_name))?;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Create .cargo/config.toml in the temporary crate
-fn create_cargo_config(target_dir: &Path, project_root: &Path) -> Result<(), CompileError> {
+/// Create `.cargo/config.toml` in the temporary crate
+fn generate_cargo_config(target_dir: &Path, project_root: &Path) -> Result<(), CompileError> {
     let cargo_dir = target_dir.join(".cargo");
     fs::create_dir_all(&cargo_dir)?;
 
@@ -310,18 +319,78 @@ target = "riscv64imac-unknown-none-elf"
     Ok(())
 }
 
-/// Build a list of dependencies for a contract
-fn build_dependency_list(project: &ContractProject, target: &ContractTarget) -> Vec<String> {
-    let mut dependencies = Vec::new();
+/// Decouple a contract module from a project, by merging and flattening the project lib, the common modules, and the contract module itself.
+///
+/// If the contract is directly defined on `lib.rs`, the generated crate matches the working dir
+fn decouple_contract_module(
+    project: &ContractProject,
+    target: &ContractTarget,
+    target_dir: &Path,
+) -> Result<(), CompileError> {
+    let src_dir = target_dir.join("src");
+    let contract_modules: Vec<_> = project.targets.iter().map(|t| &t.module).collect();
 
-    for (dep_name, _) in &project.deployable_deps {
-        // Skip self-reference
-        if dep_name == &target.generated_package {
-            continue;
-        }
+    // If a contract is defined in `lib.rs` directly, keep as it is, as it must be a single-contract project
+    if target.source_file.file_name().unwrap().to_str().unwrap() == "lib.rs" {
+        let lib_content = fs::read_to_string(&target.source_file)?;
+        fs::write(src_dir.join("lib.rs"), lib_content)?;
+    }
+    // Otherwise, merge and flatten both `lib.rs` and the contract module
+    else {
+        // Filter `lib.rs` to remove imports, attributes, and contract module declarations
+        let lib_rs_path = project.path.join("src").join("lib.rs");
+        let lib_content = fs::read_to_string(&lib_rs_path)?;
 
-        dependencies.push(dep_name.clone());
+        let (lib_ast, mut lib_imports) = ast::process_lib(&lib_content, &contract_modules)?;
+
+        // Filter contract module content to remove imports and attributes
+        let contract_module_path = target.source_file.clone();
+        let contract_content = fs::read_to_string(&contract_module_path)?;
+
+        let contract_ast = ast::process_contract_module(&contract_content, &mut lib_imports)?;
+
+        // Combine the filtered content and imports. Then write it into the generated `lib.rs`
+        let flattened_content = ast::flatten_lib(lib_ast, contract_ast, lib_imports);
+        fs::write(src_dir.join("lib.rs"), flattened_content)?;
+
+        debug!(
+            "Generated flattened `lib.rs` for contract: {}",
+            target.ident
+        );
     }
 
-    dependencies
+    // Always copy shared modules (without contracts)
+    for module_name in &project.shared_modules {
+        let module_path = project.path.join("src").join(format!("{}.rs", module_name));
+
+        if module_path.exists() {
+            let module_content = fs::read_to_string(&module_path)?;
+            fs::write(src_dir.join(format!("{}.rs", module_name)), module_content)?;
+        } else {
+            // Try `module/mod.rs` structure
+            let mod_dir_path = project.path.join("src").join(module_name);
+            let mod_file_path = mod_dir_path.join("mod.rs");
+
+            if mod_file_path.exists() {
+                // Create the module directory and copy its content
+                let target_mod_dir = src_dir.join(module_name);
+                fs::create_dir_all(&target_mod_dir)?;
+
+                let mod_content = fs::read_to_string(&mod_file_path)?;
+                fs::write(target_mod_dir.join("mod.rs"), mod_content)?;
+
+                if let Ok(entries) = fs::read_dir(mod_dir_path) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let path = entry.path();
+                        if path.is_file() && path.file_name().unwrap() != "mod.rs" {
+                            let file_name = path.file_name().unwrap();
+                            fs::copy(&path, target_mod_dir.join(file_name))?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
