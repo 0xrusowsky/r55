@@ -7,8 +7,7 @@ use generate::{generate_deployable, generate_temp_crates};
 use helpers::{find_r55_projects, sort_generated_contracts};
 
 use std::{fs, path::Path};
-use tracing::debug;
-use tracing::info;
+use tracing::{debug, info};
 
 fn main() -> eyre::Result<()> {
     // Initialize logging
@@ -65,6 +64,7 @@ fn main() -> eyre::Result<()> {
         info!("Compiling: {}", contract.name);
         let deploy_bytecode = contract.compile()?;
         let deploy_path = output_dir.join(format!("{}.bin", contract.name));
+
         fs::write(deploy_path, deploy_bytecode)?;
     }
 
