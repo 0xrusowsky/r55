@@ -13,36 +13,36 @@ use revm::InMemoryDB;
 const WETH: Address = address!("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
 const USDC: Address = address!("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
 
-struct UniswapV2FactorySetup {
-    db: InMemoryDB,
-    factory: Address,
-    fee_to_setter: Address,
-}
-
-fn factory_setup(fee_to_setter: Address) -> UniswapV2FactorySetup {
-    initialize_logger();
-    let mut db = InMemoryDB::default();
-
-    // Fund user accounts with some ETH
-    for user in [ALICE, BOB, CAROL] {
-        add_balance_to_db(&mut db, user, 1e18 as u64);
-    }
-
-    // Deploy factory contract
-    let constructor = fee_to_setter.abi_encode();
-    let bytecode = get_bytecode("uniswap_v2_factory");
-    let factory = deploy_contract(&mut db, bytecode, Some(constructor)).unwrap();
-
-    UniswapV2FactorySetup {
-        db,
-        factory,
-        fee_to_setter,
-    }
-}
-
 #[cfg(test)]
 mod uniswap_v2_factory_tests {
     use super::*;
+
+    struct UniswapV2FactorySetup {
+        db: InMemoryDB,
+        factory: Address,
+        fee_to_setter: Address,
+    }
+
+    fn factory_setup(fee_to_setter: Address) -> UniswapV2FactorySetup {
+        initialize_logger();
+        let mut db = InMemoryDB::default();
+
+        // Fund user accounts with some ETH
+        for user in [ALICE, BOB, CAROL] {
+            add_balance_to_db(&mut db, user, 1e18 as u64);
+        }
+
+        // Deploy factory contract
+        let constructor = fee_to_setter.abi_encode();
+        let bytecode = get_bytecode("uniswap_v2_factory");
+        let factory = deploy_contract(&mut db, bytecode, Some(constructor)).unwrap();
+
+        UniswapV2FactorySetup {
+            db,
+            factory,
+            fee_to_setter,
+        }
+    }
 
     #[test]
     fn test_factory_initialization() {

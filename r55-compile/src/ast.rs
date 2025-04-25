@@ -1,6 +1,5 @@
 use std::{collections::HashSet, fmt::Write};
 use syn::{parse_file, File, Item, UseGroup, UseName, UsePath, UseTree};
-use tracing::debug;
 
 use crate::types::CompileError;
 
@@ -159,7 +158,7 @@ fn process_use_tree(
             process_use_tree(result, &new_prefix, depth + 1, tree)?;
         }
         UseTree::Group(UseGroup { items, .. }) => {
-            for (i, item) in items.iter().enumerate() {
+            for item in items.iter() {
                 process_use_tree(result, prefix, depth + 1, item)?;
             }
         }
