@@ -1,4 +1,5 @@
 use alloc::borrow::Cow;
+use core::error;
 
 /// Error related to syscall convertions
 #[derive(Debug, thiserror_no_std::Error)]
